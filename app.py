@@ -4,6 +4,12 @@ import numpy as np
 import mediapipe as mp
 import pandas as pd
 import tempfile
+import os
+
+# ================== CLOUD SAFETY CHECK ==================
+# Detect if running on Streamlit Cloud (no webcam / no GPU)
+running_in_cloud = os.environ.get("STREAMLIT_RUNTIME", None) is not None
+# =========================================================
 
 st.set_page_config(page_title="Correct Pose Detection", layout="wide")
 
@@ -72,7 +78,13 @@ with right_col:
     angle_box = st.empty()
 
 # ========================= CAMERA LOOP =========================
-if st.session_state.run_cam:
+# Prevent webcam + GPU mediapipe from running on Streamlit Cloud
+if st.session_state.run_cam and running_in_cloud:
+    st.warning("⚠️ Webcam access is not supported on Streamlit Cloud.\n"
+               "Please run this app **locally** to use real-time camera pose detection.")
+    st.stop()
+
+if st.session_state.run_cam and not running_in_cloud:
 
     cap = cv2.VideoCapture(0)
 
@@ -123,7 +135,14 @@ if st.session_state.run_cam:
 
                 l_angle = calculate_angle(l_shoulder, l_elbow, l_wrist)
 
-                # POSTURE CLASSIFICATION – More realistic bicep curl ranges
+                # Rep logic
+                if l_angle >= 120:
+                    stage = "down"
+                if l_angle <= 40 and stage == "down":
+                    stage = "up"
+                    counter += 1
+
+                # Posture classification
                 if l_angle > 170:
                     pose_status = "Bad Pose – Arm hyperextended"
                 elif 120 <= l_angle <= 170:
@@ -134,17 +153,6 @@ if st.session_state.run_cam:
                     pose_status = "Good Pose – Up position"
                 elif l_angle < 20:
                     pose_status = "Bad Pose – Arm over-contracted"
-                else:
-                    pose_status = "Good Pose"
-
-                # REP COUNTING – Improved
-                if l_angle >= 120:
-                    stage = "down"
-
-                if l_angle <= 40 and stage == "down":
-                    stage = "up"
-                    counter += 1
-
 
             except:
                 pass
@@ -174,13 +182,6 @@ if st.session_state.run_cam:
 
                 l_angle = calculate_angle(l_hip, l_shoulder, l_elbow)
 
-                if l_angle > 160:
-                    pose_status = "Bad Pose – Arm too extended"
-                elif l_angle < 20:
-                    pose_status = "Bad Pose – Arm too contracted"
-                else:
-                    pose_status = "Good Pose"
-
                 if l_angle < 30:
                     stage = "down"
                 if l_angle > 80 and stage == "down":
@@ -204,13 +205,13 @@ if st.session_state.run_cam:
             r_angle
         ])
 
-        # =================== UPDATE UI ON RIGHT SIDE ===================
+        # =================== UPDATE UI ===================
         reps_box.markdown(f"### Reps: **{counter}**")
         stage_box.markdown(f"### Stage: **{stage}**")
         posture_box.markdown(f"### Posture: **{pose_status}**")
         angle_box.markdown(f"### Angle: **{l_angle}°**")
 
-        # =================== SHOW CAMERA ON LEFT ===================
+        # =================== SHOW CAMERA ===================
         frame_window.image(img, channels="BGR")
 
         if not st.session_state.run_cam:
@@ -246,7 +247,6 @@ if upload and len(st.session_state.record_frames) > 0:
         )
 
     st.session_state.record_frames = []
-
 
 # ======================= CSV DOWNLOAD =======================
 if details and len(st.session_state.csv_data) > 0:
