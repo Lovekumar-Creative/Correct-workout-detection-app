@@ -6,12 +6,12 @@ import pandas as pd
 import tempfile
 import os
 
-# ================== CLOUD SAFETY CHECK ==================
-# Detect if running on Streamlit Cloud (no webcam / no GPU)
-running_in_cloud = os.environ.get("STREAMLIT_RUNTIME", None) is not None
-# =========================================================
-
 st.set_page_config(page_title="Correct Pose Detection", layout="wide")
+
+# ================== REAL CLOUD DETECTION (RELIABLE) ==================
+# Streamlit Cloud does NOT have /dev/video0 → local machines DO.
+has_camera = os.path.exists("/dev/video0")
+# =====================================================================
 
 # Mediapipe setup
 mp_drawing = mp.solutions.drawing_utils
@@ -70,7 +70,7 @@ left_col, right_col = st.columns([2, 1])  # Camera left, settings right
 
 frame_window = left_col.empty()          # Camera feed on left side
 
-# Right side windows for data
+# Right side info panels
 with right_col:
     reps_box = st.empty()
     stage_box = st.empty()
@@ -78,13 +78,13 @@ with right_col:
     angle_box = st.empty()
 
 # ========================= CAMERA LOOP =========================
-# Prevent webcam + GPU mediapipe from running on Streamlit Cloud
-if st.session_state.run_cam and running_in_cloud:
-    st.warning("⚠️ Webcam access is not supported on Streamlit Cloud.\n"
-               "Please run this app **locally** to use real-time camera pose detection.")
+# SAFETY GUARD: BLOCK camera on Streamlit Cloud
+if st.session_state.run_cam and not has_camera:
+    st.warning("⚠️ Webcam is not supported on Streamlit Cloud.\n"
+               "Please run this app on your **local computer** to use the camera.")
     st.stop()
 
-if st.session_state.run_cam and not running_in_cloud:
+if st.session_state.run_cam and has_camera:
 
     cap = cv2.VideoCapture(0)
 
@@ -94,7 +94,10 @@ if st.session_state.run_cam and not running_in_cloud:
     l_angle = 0
     r_angle = 0
 
-    pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    pose = mp_pose.Pose(
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
 
     while st.session_state.run_cam:
 
@@ -135,14 +138,14 @@ if st.session_state.run_cam and not running_in_cloud:
 
                 l_angle = calculate_angle(l_shoulder, l_elbow, l_wrist)
 
-                # Rep logic
+                # REP LOGIC
                 if l_angle >= 120:
                     stage = "down"
                 if l_angle <= 40 and stage == "down":
                     stage = "up"
                     counter += 1
 
-                # Posture classification
+                # POSTURE LOGIC
                 if l_angle > 170:
                     pose_status = "Bad Pose – Arm hyperextended"
                 elif 120 <= l_angle <= 170:
@@ -193,7 +196,7 @@ if st.session_state.run_cam and not running_in_cloud:
 
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-        # ================= SAVE FRAME & CSV =================
+        # ================= SAVE FRAME =================
         st.session_state.record_frames.append(img.copy())
 
         st.session_state.csv_data.append([
@@ -205,13 +208,12 @@ if st.session_state.run_cam and not running_in_cloud:
             r_angle
         ])
 
-        # =================== UPDATE UI ===================
+        # ================= UI UPDATE =================
         reps_box.markdown(f"### Reps: **{counter}**")
         stage_box.markdown(f"### Stage: **{stage}**")
         posture_box.markdown(f"### Posture: **{pose_status}**")
         angle_box.markdown(f"### Angle: **{l_angle}°**")
 
-        # =================== SHOW CAMERA ===================
         frame_window.image(img, channels="BGR")
 
         if not st.session_state.run_cam:
