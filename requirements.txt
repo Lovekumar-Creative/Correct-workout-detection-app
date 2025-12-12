@@ -1,0 +1,7 @@
+opencv-python
+mediapipe
+numpy
+pandas
+scipy
+matplotlib
+scikit-learn
