@@ -4,16 +4,11 @@ import numpy as np
 import mediapipe as mp
 import pandas as pd
 import tempfile
-import os
+from datetime import datetime
 
 st.set_page_config(page_title="Correct Pose Detection", layout="wide")
 
-# ================== REAL CLOUD DETECTION (RELIABLE) ==================
-# Streamlit Cloud does NOT have /dev/video0 → local machines DO.
-has_camera = os.path.exists("/dev/video0")
-# =====================================================================
-
-# Mediapipe setup
+# Mediapipe setup (CPU only)
 mp_drawing = mp.solutions.drawing_utils
 mp_pose = mp.solutions.pose
 
@@ -27,237 +22,145 @@ def calculate_angle(a,b,c):
 
     if angle > 180.0:
         angle = 360-angle
-
     return round(angle, 2)
 
-# ================= SESSION STORAGE =================
-if "run_cam" not in st.session_state:
-    st.session_state.run_cam = False
-
-if "record_frames" not in st.session_state:
-    st.session_state.record_frames = []
-
+# ================= SESSION STATE =================
+if "counter" not in st.session_state:
+    st.session_state.counter = 0
+if "stage" not in st.session_state:
+    st.session_state.stage = None
+if "pose_status" not in st.session_state:
+    st.session_state.pose_status = ""
+if "l_angle" not in st.session_state:
+    st.session_state.l_angle = 0
+if "r_angle" not in st.session_state:
+    st.session_state.r_angle = 0
 if "csv_data" not in st.session_state:
     st.session_state.csv_data = []
 
-# UI Title
-st.title("Correct Pose Detection App")
+st.title("Correct Pose Detection App (Cloud Compatible)")
 
 exercise = st.selectbox(
     "Select Your Exercise",
-    ["Walking", "Bicep curl", "Lateral raise"]
+    ["Bicep curl", "Lateral raise"]
 )
 
-# ========================= BUTTONS =========================
-col1, col2, col3, col4 = st.columns([1,1,1,1])
+# ================= CAMERA INPUT =================
+st.subheader("Webcam Input (Cloud Compatible)")
+img_file_buffer = st.camera_input("Enable webcam to begin exercise")
 
-with col1:
-    start = st.button("▶ Start Camera")
-with col2:
-    stop = st.button("⏹ Stop Camera")
-with col3:
-    upload = st.button("Output Video")
-with col4:
-    details = st.button("Download Details")
+if img_file_buffer is not None:
+    frame = cv2.imdecode(np.frombuffer(img_file_buffer.getvalue(), np.uint8), cv2.IMREAD_COLOR)
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-if start:
-    st.session_state.run_cam = True
-if stop:
-    st.session_state.run_cam = False
-
-# ========================= HORIZONTAL LAYOUT =========================
-left_col, right_col = st.columns([2, 1])  # Camera left, settings right
-
-frame_window = left_col.empty()          # Camera feed on left side
-
-# Right side info panels
-with right_col:
-    reps_box = st.empty()
-    stage_box = st.empty()
-    posture_box = st.empty()
-    angle_box = st.empty()
-
-# ========================= CAMERA LOOP =========================
-# SAFETY GUARD: BLOCK camera on Streamlit Cloud
-if st.session_state.run_cam and not has_camera:
-    st.warning("⚠️ Webcam is not supported on Streamlit Cloud.\n"
-               "Please run this app on your **local computer** to use the camera.")
-    st.stop()
-
-if st.session_state.run_cam and has_camera:
-
-    cap = cv2.VideoCapture(0)
-
-    counter = 0
-    stage = None
-    pose_status = ""
-    l_angle = 0
-    r_angle = 0
-
-    pose = mp_pose.Pose(
+    # ================= PROCESS USING MEDIAPIPE CPU =================
+    with mp_pose.Pose(
         min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    )
+        min_tracking_confidence=0.5,
+        model_complexity=1
+    ) as pose:
 
-    while st.session_state.run_cam:
+        results = pose.process(frame)
 
-        ret, img = cap.read()
-        if not ret:
-            st.error("Failed to access camera.")
-            break
+        if results.pose_landmarks:
 
-        img = cv2.flip(img, 1)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img.flags.writeable = False
-        results = pose.process(img)
-        img.flags.writeable = True
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            landmarks = results.pose_landmarks.landmark
 
-        # ================= EXERCISE LOGIC =================
-        if exercise == "Bicep curl":
-            try:
-                landmarks = results.pose_landmarks.landmark
+            # Common joints
+            left_shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
+                             landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
+            left_elbow = [landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].x,
+                          landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
+            left_wrist = [landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].x,
+                          landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].y]
 
-                # LEFT ARM
-                r_shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
-                              landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
-                r_elbow = [landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].x,
-                           landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
-                r_wrist = [landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].x,
-                           landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].y]
-
-                r_angle = calculate_angle(r_shoulder, r_elbow, r_wrist)
-
-                # RIGHT ARM
-                l_shoulder = [landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x,
+            right_shoulder = [landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x,
                               landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y]
-                l_elbow = [landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW.value].x,
+            right_elbow = [landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW.value].x,
                            landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW.value].y]
-                l_wrist = [landmarks[mp_pose.PoseLandmark.RIGHT_WRIST.value].x,
+            right_wrist = [landmarks[mp_pose.PoseLandmark.RIGHT_WRIST.value].x,
                            landmarks[mp_pose.PoseLandmark.RIGHT_WRIST.value].y]
 
-                l_angle = calculate_angle(l_shoulder, l_elbow, l_wrist)
+            # ================= BICEP CURL =================
+            if exercise == "Bicep curl":
+                angle = calculate_angle(left_shoulder, left_elbow, left_wrist)
+                st.session_state.l_angle = angle
 
-                # REP LOGIC
-                if l_angle >= 120:
-                    stage = "down"
-                if l_angle <= 40 and stage == "down":
-                    stage = "up"
-                    counter += 1
+                if angle >= 120:
+                    st.session_state.stage = "down"
+                if angle <= 40 and st.session_state.stage == "down":
+                    st.session_state.stage = "up"
+                    st.session_state.counter += 1
 
-                # POSTURE LOGIC
-                if l_angle > 170:
-                    pose_status = "Bad Pose – Arm hyperextended"
-                elif 120 <= l_angle <= 170:
-                    pose_status = "Good Pose – Down position"
-                elif 70 <= l_angle < 120:
-                    pose_status = "Good Pose – Moving"
-                elif 30 <= l_angle < 70:
-                    pose_status = "Good Pose – Up position"
-                elif l_angle < 20:
-                    pose_status = "Bad Pose – Arm over-contracted"
+                if angle > 170:
+                    st.session_state.pose_status = "Bad Pose – Arm hyperextended"
+                elif 120 <= angle <= 170:
+                    st.session_state.pose_status = "Good Down Position"
+                elif 70 <= angle < 120:
+                    st.session_state.pose_status = "Good Motion"
+                elif 20 <= angle < 70:
+                    st.session_state.pose_status = "Up Position"
+                else:
+                    st.session_state.pose_status = "Over Contracted"
 
-            except:
-                pass
+            # ================= LATERAL RAISE =================
+            if exercise == "Lateral raise":
+                hip = [landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x,
+                       landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y]
 
-            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                angle = calculate_angle(hip, left_shoulder, left_elbow)
+                st.session_state.l_angle = angle
 
-        # ============== LATERAL RAISE LOGIC =================
-        if exercise == "Lateral raise":
-            try:
-                landmarks = results.pose_landmarks.landmark
+                if angle < 30:
+                    st.session_state.stage = "down"
+                if angle > 80 and st.session_state.stage == "down":
+                    st.session_state.stage = "up"
+                    st.session_state.counter += 1
 
-                r_shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
-                              landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
-                r_elbow = [landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].x,
-                           landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
-                r_hip = [landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x,
-                         landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y]
+                if angle > 160:
+                    st.session_state.pose_status = "Bad – Arm too extended"
+                elif angle < 20:
+                    st.session_state.pose_status = "Bad – Too low"
+                else:
+                    st.session_state.pose_status = "Good Pose"
 
-                r_angle = calculate_angle(r_hip, r_shoulder, r_elbow)
+            # Draw Pose
+            mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-                l_shoulder = [landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x,
-                              landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y]
-                l_elbow = [landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW.value].x,
-                           landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW.value].y]
-                l_hip = [landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].x,
-                         landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].y]
+            # Save CSV row
+            st.session_state.csv_data.append([
+                datetime.now(),
+                exercise,
+                st.session_state.counter,
+                st.session_state.stage,
+                st.session_state.pose_status,
+                st.session_state.l_angle,
+                st.session_state.r_angle
+            ])
 
-                l_angle = calculate_angle(l_hip, l_shoulder, l_elbow)
+# ================= SHOW OUTPUT =================
+col1, col2 = st.columns(2)
 
-                if l_angle < 30:
-                    stage = "down"
-                if l_angle > 80 and stage == "down":
-                    stage = "up"
-                    counter += 1
+with col1:
+    st.subheader("Pose Visualization")
+    if img_file_buffer is not None:
+        st.image(frame, channels="RGB")
 
-            except:
-                pass
+with col2:
+    st.subheader("Exercise Metrics")
+    st.write(f"### Reps: **{st.session_state.counter}**")
+    st.write(f"### Stage: **{st.session_state.stage}**")
+    st.write(f"### Status: **{st.session_state.pose_status}**")
+    st.write(f"### Angle: **{st.session_state.l_angle}°**")
 
-            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-
-        # ================= SAVE FRAME =================
-        st.session_state.record_frames.append(img.copy())
-
-        st.session_state.csv_data.append([
-            exercise,
-            counter,
-            stage,
-            pose_status,
-            l_angle,
-            r_angle
-        ])
-
-        # ================= UI UPDATE =================
-        reps_box.markdown(f"### Reps: **{counter}**")
-        stage_box.markdown(f"### Stage: **{stage}**")
-        posture_box.markdown(f"### Posture: **{pose_status}**")
-        angle_box.markdown(f"### Angle: **{l_angle}°**")
-
-        frame_window.image(img, channels="BGR")
-
-        if not st.session_state.run_cam:
-            break
-
-    cap.release()
-    frame_window.empty()
-
-# ======================= VIDEO DOWNLOAD =======================
-if upload and len(st.session_state.record_frames) > 0:
-
-    temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-
-    height, width, _ = st.session_state.record_frames[0].shape
-    writer = cv2.VideoWriter(
-        temp_video.name,
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        20,
-        (width, height)
-    )
-
-    for frame in st.session_state.record_frames:
-        writer.write(frame)
-
-    writer.release()
-
-    with open(temp_video.name, "rb") as video_file:
-        st.download_button(
-            label="Output Video",
-            data=video_file,
-            file_name="output_video.mp4",
-            mime="video/mp4"
-        )
-
-    st.session_state.record_frames = []
-
-# ======================= CSV DOWNLOAD =======================
-if details and len(st.session_state.csv_data) > 0:
-
+# =================== DOWNLOAD CSV ===================
+if st.button("Download Exercise Data") and len(st.session_state.csv_data) > 0:
     df = pd.DataFrame(st.session_state.csv_data, columns=[
+        "Time",
         "Exercise",
         "Reps",
         "Stage",
-        "Posture Status",
+        "Pose Status",
         "Left Angle",
         "Right Angle"
     ])
@@ -267,10 +170,8 @@ if details and len(st.session_state.csv_data) > 0:
 
     with open(temp_csv.name, "rb") as f:
         st.download_button(
-            label="Download Details",
+            label="Download CSV File",
             data=f,
-            file_name="pose_details.csv",
+            file_name="exercise_data.csv",
             mime="text/csv"
         )
-
-    st.session_state.csv_data = []
